@@ -133,6 +133,15 @@ find $BUILD_FOLDER/app/Moonlight.app/ -name '*.dSYM' | xargs rm -rf
 if [ "$SIGNING_IDENTITY" != "" ]; then
   echo Signing app bundle
   codesign --force --deep --options runtime --timestamp --sign "$SIGNING_IDENTITY" $BUILD_FOLDER/app/Moonlight.app || fail "Signing failed!"
+else
+  # 没配开发者证书时也必须签一次 —— 哪怕只是 ad-hoc（`-`）。macOS 15 起 NECP
+  # 会静默丢弃「完全没有代码签名身份」的 App 发出的包，表现为主机列表永远离线、
+  # 抓包 0 个包（连 SYN 都没出去），而系统设置的「本地网络」里也看不到可授权的
+  # 开关。ad-hoc 签名足以让这条策略放行，用户不必再手动执行
+  # `sudo codesign --force --deep --sign - /Applications/Moonlight.app`。
+  # 注意：重装 / 覆盖安装后签名会丢，所以这一步必须在打包时做，不能只写进文档。
+  echo "No signing identity provided; applying ad-hoc signature so macOS 15+ NECP permits local network access"
+  codesign --force --deep --sign - $BUILD_FOLDER/app/Moonlight.app || fail "Ad-hoc signing failed!"
 fi
 
 echo Creating DMG
