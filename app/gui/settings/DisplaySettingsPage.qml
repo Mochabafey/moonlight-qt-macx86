@@ -102,6 +102,13 @@ Column {
         }
 
         ToggleRow {
+            title: qsTr("Keep Moonlight UI while streaming")
+            description: qsTr("Keeps the Moonlight window on screen during a stream and shows a Stop Streaming button on it, so you can disconnect without switching to the stream window. Fullscreen streams still open in their own fullscreen space — switch back to Moonlight with the usual window shortcut.")
+            checked: StreamingPreferences.keepUiDuringStreaming
+            onToggled: function(value) { StreamingPreferences.keepUiDuringStreaming = value }
+        }
+
+        ToggleRow {
             title: qsTr("Stretch presentation")
             description: qsTr("Ignores both client and host PC aspect ratios, which is required for displaying Half-SBS (Side-By-Side) 3D signals to AR/XR devices that only support Full-SBS (usually 1920x1080 per eye, meaning a total resolution of 3840x1080)")
             checked: StreamingPreferences.ignoreAspectRatio

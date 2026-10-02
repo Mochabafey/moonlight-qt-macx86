@@ -832,6 +832,14 @@
         <translation>(推荐)</translation>
     </message>
     <message>
+        <source>Keep Moonlight UI while streaming</source>
+        <translation>串流时保留 Moonlight 界面</translation>
+    </message>
+    <message>
+        <source>Keeps the Moonlight window on screen during a stream and shows a Stop Streaming button on it, so you can disconnect without switching to the stream window. Fullscreen streams still open in their own fullscreen space — switch back to Moonlight with the usual window shortcut.</source>
+        <translation>串流时保留 Moonlight 窗口，并在上面显示「停止串流」按钮，不用切到串流窗口就能断开。全屏串流仍会独占自己的全屏 Space —— 用系统的窗口快捷键切回 Moonlight 即可。</translation>
+    </message>
+    <message>
         <source>Stretch presentation</source>
         <translation>拉伸画面</translation>
     </message>
@@ -3152,6 +3160,14 @@
 </context>
 <context>
     <name>StreamSegue</name>
+    <message>
+        <source>Stop Streaming</source>
+        <translation>停止串流</translation>
+    </message>
+    <message>
+        <source>The stream keeps running until you stop it here or close the stream window.</source>
+        <translation>串流会一直继续，直到你在这里点停止，或者关掉串流窗口。</translation>
+    </message>
     <message>
         <source>Resuming %1...</source>
         <translation>正在恢复 %1...</translation>

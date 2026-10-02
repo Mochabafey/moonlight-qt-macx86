@@ -25,6 +25,10 @@ Item {
     property bool isResume : false
     property bool quitAfter : false
 
+    // 串流已建立且用户选择保留主界面。为真时加载页不淡出，改成常驻一个
+    // 「停止串流」按钮，让人不切到串流窗口也能断开。
+    property bool keepUiActive : false
+
     // 退出组合键提示随设置走：玩家改了组合键，提示不能还教默认那套。
     // 按键名按当前手柄风格显示（PS 显示 Options/Share/✕，Switch 显示 +/−），
     // swapFaceButtons 时补偿到实际要按的物理键
@@ -79,14 +83,36 @@ Item {
         // 窗口本身不在这里藏，由 Session::exec() 在串流窗口进入全屏之后隐藏。
         // 提前藏的话，macOS 切进新 Space 的整个动画期间旧 Space 露出来的是桌面，
         // 而不是这层已经全黑的幕。
+
+        // 「串流时保留主界面」：内容不能藏，停止按钮还得留着点。
+        if (StreamingPreferences.keepUiDuringStreaming) {
+            keepUiActive = true
+        }
     }
 
     function connectionStarted()
     {
+        // 勾了「串流时保留主界面」就不淡出到全黑 —— 主界面留着本身就是目的，
+        // 淡没了就只剩一块黑幕，停止按钮也一起没了。
+        if (StreamingPreferences.keepUiDuringStreaming) {
+            keepUiActive = true
+            return
+        }
+
         // 淡出到全黑。Session::exec() 会等这条动画跑完再创建串流窗口，
         // 所以交接是在一块纯黑上完成的，中间不会闪。
         backgroundZoomAnimation.stop()
         exitAnimation.start()
+    }
+
+    // 「停止串流」：走 Session::interrupt()，和串流覆盖层里的退出键同一条路径
+    // （LiInterruptConnection + 往 SDL 队列注入 SDL_QUIT），会话照常收尾，
+    // sessionFinished 会把这一页弹回应用列表并显示错误提示。
+    function stopStreaming()
+    {
+        if (session !== null) {
+            session.interrupt()
+        }
     }
 
     function displayLaunchError(text)
@@ -439,6 +465,34 @@ Item {
             verticalAlignment: Text.AlignVCenter
 
             wrapMode: Text.Wrap
+        }
+
+        // 「串流时保留主界面」模式下的常驻出口。放底部居中：那里本来是 hintText
+        // 的地盘，串流建立后 hintText 已被藏掉，不会打架。
+        Column {
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: Theme.spaceXl
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Theme.spaceMd
+            width: parent.width
+            visible: keepUiActive
+
+            HardButton {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: qsTr("Stop Streaming")
+                onClicked: stopStreaming()
+            }
+
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: qsTr("The stream keeps running until you stop it here or close the stream window.")
+                color: Theme.textFaint
+                font.family: Theme.fontMono
+                font.pointSize: Theme.fontCaption
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                width: Math.min(parent.width - Theme.spaceXl * 2, 520)
+            }
         }
     }
 }

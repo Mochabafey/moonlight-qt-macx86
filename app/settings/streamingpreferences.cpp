@@ -66,6 +66,7 @@
 #define SER_SWAPFACEBUTTONS "swapfacebuttons"
 #define SER_CAPTURESYSKEYS "capturesyskeys"
 #define SER_KEEPAWAKE "keepawake"
+#define SER_KEEPUIDURINGSTREAMING "keepuiduringstreaming"
 #define SER_LANGUAGE "language"
 #define SER_SCREENCOMBINATIONMODE "screencombinationmode"
 #define SER_LEGACY_CUSTOMSCREENMODE "customscreenmode"
@@ -305,6 +306,7 @@ void StreamingPreferences::reload()
     reverseScrollDirection = settings.value(SER_REVERSESCROLL, false).toBool();
     swapFaceButtons = settings.value(SER_SWAPFACEBUTTONS, false).toBool();
     keepAwake = settings.value(SER_KEEPAWAKE, true).toBool();
+    keepUiDuringStreaming = settings.value(SER_KEEPUIDURINGSTREAMING, false).toBool();
     enableHdr = settings.value(SER_HDR, false).toBool();
     hdrMode = static_cast<HdrMode>(settings.value(SER_HDRMODE,
                                                    static_cast<int>(HdrMode::HDR_PQ)).toInt());
@@ -742,6 +744,7 @@ void StreamingPreferences::save()
     settings.setValue(SER_SWAPFACEBUTTONS, swapFaceButtons);
     settings.setValue(SER_CAPTURESYSKEYS, captureSysKeysMode);
     settings.setValue(SER_KEEPAWAKE, keepAwake);
+    settings.setValue(SER_KEEPUIDURINGSTREAMING, keepUiDuringStreaming);
     settings.setValue(SER_SCREENCOMBINATIONMODE, static_cast<int>(screenCombinationMode));
     settings.remove(SER_LEGACY_CUSTOMSCREENMODE);
     settings.remove(SER_LEGACY_CUSTOMVDDSCREENMODE);

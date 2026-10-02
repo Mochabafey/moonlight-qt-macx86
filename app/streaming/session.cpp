@@ -4720,8 +4720,12 @@ void Session::exec()
     //
     // 由 C++ 来做是因为 QML 等不到通知：往下就进 SDL 事件循环了，那之后 Qt 的队列
     // 信号和定时器只在串流覆盖层可见时才会被 pump。
+    //
+    // 用户勾了「串流时保留主界面」就整个跳过：主界面留着，串流页上的「停止串流」
+    // 按钮才点得到。这条不能只改 QML —— 就算不藏窗口，StreamSegue 也会在
+    // connectionStarted() 里把内容淡成全黑，那样主界面上只剩一块黑幕。
     Uint32 qtWindowHideDeadline = 0;
-    if (m_QtWindow != nullptr) {
+    if (m_QtWindow != nullptr && !m_Preferences->keepUiDuringStreaming) {
         if (awaitingFullScreenEntry) {
             qtWindowHideDeadline = SDL_GetTicks() + k_FullScreenEntryTimeoutMs;
         }

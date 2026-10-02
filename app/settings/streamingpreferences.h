@@ -248,6 +248,10 @@ public:
     Q_PROPERTY(RendererSelection rendererSelection MEMBER rendererSelection NOTIFY rendererSelectionChanged)
     Q_PROPERTY(WindowMode windowMode MEMBER windowMode NOTIFY windowModeChanged)
     Q_PROPERTY(WindowMode recommendedFullScreenMode MEMBER recommendedFullScreenMode CONSTANT)
+    // 串流时保留 Moonlight 主界面。默认关闭（保持上游行为：串流窗口接管，
+    // 主界面藏到后台）；打开后主界面不隐藏，串流页会留一个「停止串流」按钮，
+    // 方便不切到串流窗口就能断开。
+    Q_PROPERTY(bool keepUiDuringStreaming MEMBER keepUiDuringStreaming NOTIFY keepUiDuringStreamingChanged)
     Q_PROPERTY(UIDisplayMode uiDisplayMode MEMBER uiDisplayMode NOTIFY uiDisplayModeChanged)
     Q_PROPERTY(bool rememberWindowPosition MEMBER rememberWindowPosition NOTIFY rememberWindowPositionChanged)
     Q_PROPERTY(BackgroundSource backgroundSource READ backgroundSource WRITE setBackgroundSource NOTIFY backgroundConfigurationChanged)
@@ -335,6 +339,7 @@ public:
     VideoDecoderSelection videoDecoderSelection;
     WindowMode windowMode;
     WindowMode recommendedFullScreenMode;
+    bool keepUiDuringStreaming;
     UIDisplayMode uiDisplayMode;
     bool rememberWindowPosition;
     Language language;
@@ -403,6 +408,7 @@ signals:
     void swapFaceButtonsChanged();
     void captureSysKeysModeChanged();
     void keepAwakeChanged();
+    void keepUiDuringStreamingChanged();
     void languageChanged();
     void screenCombinationModeChanged();
     void enableMicrophoneChanged();
