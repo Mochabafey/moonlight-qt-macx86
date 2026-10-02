@@ -2230,6 +2230,26 @@
         <translation>无法切换 %1 的连接 IP。</translation>
     </message>
     <message>
+        <source>Unable to force the connection to this address for %1.</source>
+        <translation>无法把 %1 的连接强制指定到这个地址。</translation>
+    </message>
+    <message>
+        <source>Force Connect</source>
+        <translation>强制连接</translation>
+    </message>
+    <message>
+        <source>Force Pair</source>
+        <translation>强制配对</translation>
+    </message>
+    <message>
+        <source>No response from %1 on any known address.</source>
+        <translation>所有已知地址都联系不上 %1。</translation>
+    </message>
+    <message>
+        <source>Make sure the host is awake and reachable, or select a different connection IP.</source>
+        <translation>请确认主机已开机且网络可达，或者换一个连接 IP。</translation>
+    </message>
+    <message>
         <source>Choose the IP address to connect to %1:</source>
         <translation>请选择用于连接 %1 的 IP 地址：</translation>
     </message>
@@ -2748,12 +2768,28 @@
         <translation>类型：%1</translation>
     </message>
     <message>
+        <source>Latency: not measured yet</source>
+        <translation>延迟：尚未测出</translation>
+    </message>
+    <message>
+        <source>Latency: %1 ms</source>
+        <translation>延迟：%1 毫秒</translation>
+    </message>
+    <message>
+        <source>Force this address (no fallback)</source>
+        <translation>强制指定此地址（不回退）</translation>
+    </message>
+    <message>
+        <source>The connection stays on this address. If it stops responding, Moonlight will not fall back to another address.</source>
+        <translation>连接会一直停在这个地址上。如果它不再响应，Moonlight 不会回退到其它地址。</translation>
+    </message>
+    <message>
         <source>Warning: This address has not been verified by polling yet.</source>
         <translation>警告：这个地址还没有通过轮询验证。</translation>
     </message>
     <message>
-        <source>&quot;Auto&quot; uses the default address selection with automatic fallback. Selecting a specific IP will pin the connection to that address.</source>
-        <translation>「自动」使用默认的地址选择并在失败时自动回退。选择某个具体 IP 会把连接固定到那个地址。</translation>
+        <source>&quot;Auto&quot; uses the default address selection with automatic fallback. It prefers the fastest address that is known to work, and tries the next one when an address fails.</source>
+        <translation>「自动」使用默认的地址选择并在失败时自动回退：优先使用已知可用且延迟最低的地址，某个地址不通时会自动尝试下一个。</translation>
     </message>
 </context>
 <context>

@@ -123,7 +123,28 @@ CenteredGridView {
         model.initialize(ComputerManager)
         model.pairingCompleted.connect(pairingComplete)
         model.connectionTestCompleted.connect(testConnectionDialog.connectionTestComplete)
+        model.forcePairStarted.connect(forcePairStarted)
+        model.hostProbeCompleted.connect(hostProbeComplete)
         return model
+    }
+
+    // 强制配对已经带着 PIN 发出去了，把配对码弹出来让用户去主机端确认。
+    function forcePairStarted(pin, computerName)
+    {
+        pairDialog.pin = pin
+        pairDialog.open()
+    }
+
+    // 强制连接 / 强制配对的前置探测失败了：所有候选地址都没应答。
+    function hostProbeComplete(success, computerName)
+    {
+        if (success) {
+            return
+        }
+
+        errorDialog.text = qsTr("No response from %1 on any known address.").arg(computerName)
+        errorDialog.helpText = qsTr("Make sure the host is awake and reachable, or select a different connection IP.")
+        errorDialog.open()
     }
 
     function openAppView(computerIndex, computerName, showHiddenGames)
@@ -412,12 +433,26 @@ CenteredGridView {
                 NavigableMenuItem {
                     text: qsTr("Select Connection IP")
                     onTriggered: showAddressSelectionForComputer(index, model.name, false)
-                    visible: model.online && model.paired && computerModel.hasMultipleConnectionAddresses(index)
+                    // 不再要求「在线且已配对」：链路被判离线但实际在线时，恰恰要
+                    // 靠这里换一条能通的地址（或者勾上强制指定）把连接救回来。
+                    visible: computerModel.hasMultipleConnectionAddresses(index)
                 }
                 NavigableMenuItem {
                     text: qsTr("Wake PC")
                     onTriggered: computerModel.wakeComputer(index)
                     visible: !model.online && model.wakeable
+                }
+                // 下面两项是「显示离线但其实在线」的兜底手段：Wake 只能发唤醒魔术包，
+                // 主机明明醒着却因为状态判错而连不上时它帮不上忙。
+                NavigableMenuItem {
+                    text: qsTr("Force Connect")
+                    onTriggered: computerModel.forceConnectComputer(index)
+                    visible: !model.online
+                }
+                NavigableMenuItem {
+                    text: qsTr("Force Pair")
+                    onTriggered: computerModel.forcePairComputer(index)
+                    visible: !model.online || !model.paired
                 }
                 NavigableMenuItem {
                     text: qsTr("Test Network")
@@ -642,7 +677,7 @@ CenteredGridView {
         property string pcName: ""
         property bool openAppAfterSelection: false
 
-        onAddressSelected: function(address) {
+        onAddressSelected: function(address, forceLock) {
             var ok = address.isAuto
                     ? computerModel.resetToAutomaticAddressForComputer(pcIndex)
                     : computerModel.setActiveAddressForComputer(pcIndex, address.address, address.port)
@@ -651,6 +686,15 @@ CenteredGridView {
                 errorDialog.helpText = ""
                 errorDialog.open()
                 return
+            }
+
+            // 地址定下来之后再落「强制指定」。顺序不能反：没有固定地址时
+            // 锁定会被拒绝。
+            if (!address.isAuto && forceLock
+                    && !computerModel.setAddressLockedForComputer(pcIndex, true)) {
+                errorDialog.text = qsTr("Unable to force the connection to this address for %1.").arg(pcName)
+                errorDialog.helpText = ""
+                errorDialog.open()
             }
 
             if (openAppAfterSelection) {

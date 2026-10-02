@@ -61,6 +61,12 @@ public:
     // Undo a setActiveAddress() pin and go back to automatic selection.
     Q_INVOKABLE bool resetToAutomaticAddress();
 
+    // 「强制指定」：打开后只走固定地址，失败也不回退到其它候选链路。
+    // 需要先 setActiveAddress() 选好一个具体地址才行。
+    Q_INVOKABLE bool setAddressLocked(bool locked);
+
+    Q_INVOKABLE bool isAddressLocked() const;
+
     Q_INVOKABLE QVariantMap getActiveAddressInfo();
 
     // Defensive self-heal: re-read m_Computer->currentGameId and force-emit

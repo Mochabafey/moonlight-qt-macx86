@@ -5,23 +5,24 @@ import "theme"
 
 // 连接 IP 选择框。PcView（对某台主机切地址）和 AppView（在应用列表里切当前主机的
 // 地址）用的是同一个框：两边 model 给出的条目形状本来就一样
-// （address / port / display / type / isActive / isTested），只有提示语和「自动」
-// 这一项不同，所以做成参数。
+// （address / port / display / type / isActive / isTested / latency / isLocked），
+// 只有提示语和「自动」这一项不同，所以做成参数。
 //
 // 选中结果通过 addressSelected 抛给调用方 —— 落地方式两边不一样
 // （computerModel.setActiveAddressForComputer vs appModel.setActiveAddress + 自动开关），
-// 那部分不属于这个框。
+// 那部分不属于这个框。第二个参数是「强制指定」勾选态。
 NavigableDialog {
     id: control
 
     // 条目数组。约定每项含 address / port / display / type / isActive；
-    // isTested 缺省视为已验证，isAuto 标记「自动选择」这种没有具体地址的伪条目。
+    // isTested 缺省视为已验证，isAuto 标记「自动选择」这种没有具体地址的伪条目，
+    // latency 是这条链路最近测到的往返毫秒数（-1 表示还没测到）。
     property var addresses: []
 
     // 列表上方那句提示，调用方自己填（PcView 要带主机名）
     property string promptText: ""
 
-    signal addressSelected(var address)
+    signal addressSelected(var address, bool forceLock)
 
     // 打开时预选哪一项：model 已经用 isActive 标好了当前生效的条目
     // （没固定地址时是「自动」，否则是被固定的那个），调用方不用自己算。
@@ -48,6 +49,20 @@ NavigableDialog {
         return false
     }
 
+    // 「自动」这一项没有具体地址，勾不了强制指定，所以只在选中具体地址时才显示勾选框。
+    readonly property bool canLock: currentAddress !== null && !currentAddress.isAuto
+
+    // 延迟文案。没测到过就留空，别显示 "0 ms" 骗人。
+    readonly property string latencyText: {
+        if (!currentAddress || currentAddress.isAuto) {
+            return ""
+        }
+        if (currentAddress.latency === undefined || currentAddress.latency < 0) {
+            return qsTr("Latency: not measured yet")
+        }
+        return qsTr("Latency: %1 ms").arg(currentAddress.latency)
+    }
+
     title: qsTr("Select Connection IP")
     standardButtons: DialogButtonBox.Ok | DialogButtonBox.Cancel
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
@@ -59,16 +74,25 @@ NavigableDialog {
     onOpened: {
         addressCombo.currentIndex = activeIndex
 
-        // 地址下拉是内容区唯一一个可聚焦的控件。这两页都不跑 UI 导航模式，手柄发的是
-        // 真方向键，不接管上下的话会被 ComboBox 拿去换地址，底下的确定 / 取消永远
-        // 到不了。按钮由 standardButtons 生成，要等对话框建好才取得到，所以放在这里。
-        addressCombo.navDownItem = standardButton(DialogButtonBox.Ok)
+        // 地址下拉是内容区第一个可聚焦的控件。这两页都不跑 UI 导航模式，手柄发的
+        // 是真方向键，不接管上下的话会被 ComboBox 拿去换地址，底下的勾选框和
+        // 确定 / 取消永远到不了。按钮由 standardButtons 生成，要等对话框建好才
+        // 取得到，所以放在这里。navDownItem 的取值由 syncLockCheck() 负责。
+        syncLockCheck()
         addressCombo.forceActiveFocus(Qt.TabFocusReason)
+    }
+
+    // 换地址时把勾选框同步到新条目的状态：每条地址各自记着自己的锁定态，
+    // 不是全局一个开关。
+    function syncLockCheck() {
+        lockCheck.checked = control.canLock && control.currentAddress.isLocked === true
+        addressCombo.navDownItem = control.canLock ? lockCheck : standardButton(DialogButtonBox.Ok)
     }
 
     onAccepted: {
         if (control.currentAddress) {
-            control.addressSelected(control.currentAddress)
+            control.addressSelected(control.currentAddress,
+                                    control.canLock && lockCheck.checked)
         }
     }
 
@@ -95,16 +119,24 @@ NavigableDialog {
             popup.width: width
             model: control.addresses
             textRole: "display"
+
+            onCurrentIndexChanged: control.syncLockCheck()
         }
 
-        // 地址类型 / 未验证告警：都是机读信息，走等宽
+        // 地址类型 / 延迟：都是机读信息，走等宽
         Text {
             width: parent.width
             visible: control.currentAddress !== null
             // 短路判断直接看 currentAddress，别看 visible：两个绑定都依赖
             // currentAddress，求值先后没有保证，靠 visible 挡的话在
             // currentAddress 变成 null 的那一拍可能先算 text 就取空指针成员了。
-            text: control.currentAddress ? qsTr("Type: %1").arg(control.currentAddress.type) : ""
+            text: {
+                if (!control.currentAddress) {
+                    return ""
+                }
+                var typeLine = qsTr("Type: %1").arg(control.currentAddress.type)
+                return control.latencyText ? typeLine + " · " + control.latencyText : typeLine
+            }
             color: Theme.textDim
             font.family: Theme.fontMono
             font.pointSize: Theme.fontBody
@@ -125,10 +157,37 @@ NavigableDialog {
             wrapMode: Text.Wrap
         }
 
+        HardCheckBox {
+            id: lockCheck
+            width: parent.width
+            visible: control.canLock
+            text: qsTr("Force this address (no fallback)")
+            font.pointSize: Theme.fontBody
+
+            // 手柄 / 键盘往下走：勾选框 → 确定。HardCheckBox 没有 navUpItem /
+            // navDownItem，所以在这里补一句，免得焦点卡在勾选框上出不去。
+            Keys.onDownPressed: {
+                var okButton = control.standardButton(DialogButtonBox.Ok)
+                if (okButton) {
+                    okButton.forceActiveFocus(Qt.TabFocusReason)
+                }
+            }
+        }
+
+        Text {
+            width: parent.width
+            visible: control.canLock && lockCheck.checked
+            text: qsTr("The connection stays on this address. If it stops responding, Moonlight will not fall back to another address.")
+            color: Theme.textFaint
+            font.family: Theme.fontMono
+            font.pointSize: Theme.fontCaption
+            wrapMode: Text.Wrap
+        }
+
         Text {
             width: parent.width
             visible: control.hasAutoEntry
-            text: qsTr("\"Auto\" uses the default address selection with automatic fallback. Selecting a specific IP will pin the connection to that address.")
+            text: qsTr("\"Auto\" uses the default address selection with automatic fallback. It prefers the fastest address that is known to work, and tries the next one when an address fails.")
             color: Theme.textFaint
             font.family: Theme.fontMono
             font.pointSize: Theme.fontCaption

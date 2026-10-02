@@ -7,6 +7,9 @@
 #include <QNetworkInterface>
 #include <QNetworkProxy>
 
+#include <algorithm>
+#include <climits>
+
 #define SER_NAME "hostname"
 #define SER_UUID "uuid"
 #define SER_MAC "mac"
@@ -22,6 +25,10 @@
 #define SER_SRVCERT "srvcert"
 #define SER_CUSTOMNAME "customname"
 #define SER_NVIDIASOFTWARE "nvidiasw"
+
+// 自动选路时的粘滞余量：新链路要比当前生效的那条快出这么多毫秒才会被换上去。
+// 纯粹为了避免两条延迟接近的地址在首选位上反复横跳。
+static constexpr int HOST_SWITCH_HYSTERESIS_MS = 5;
 
 NvComputer::NvComputer(QSettings& settings)
 {
@@ -535,6 +542,15 @@ QVector<NvAddress> NvComputer::uniqueAddresses() const
     // We must have at least 1 address
     Q_ASSERT(!uniqueAddressList.isEmpty());
 
+    // 按「用户指定 > 验证过能用（实测延迟快的在前） > 还没验证过的」重排。
+    // 轮询按这个顺序逐个尝试，所以最快的链路会被优先使用，失败的自动轮到下一个，
+    // 没验证过的垫底；用 stable_sort 是为了让同档次同延迟的条目保持上面那份
+    // 自然顺序 —— 一次测速抖动不该把候选顺序整体洗一遍。
+    std::stable_sort(uniqueAddressList.begin(), uniqueAddressList.end(),
+                     [this](const NvAddress& address1, const NvAddress& address2) {
+        return addressSortKeyLocked(address1) < addressSortKeyLocked(address2);
+    });
+
     return uniqueAddressList;
 }
 
@@ -550,6 +566,9 @@ bool NvComputer::resetToAutomaticAddress()
     QWriteLocker writeLocker(&lock);
 
     pinnedAddress = NvAddress();
+    // 没有固定地址就没有「强制指定」可谈，顺手把锁定清掉，免得下次固定别的
+    // 地址时还带着上一次的锁。
+    addressLocked = false;
 
     // 让 activeAddress 退回自然顺序里的头一个地址，后面的失败回退仍由轮询完成。
     // 不能直接置空：activeAddress 同时是 NvHTTP 和串流真正使用的地址，置空会留下
@@ -571,6 +590,117 @@ bool NvComputer::resetToAutomaticAddress()
     return false;
 }
 
+bool NvComputer::hasPinnedAddress() const
+{
+    QReadLocker readLocker(&lock);
+    return !pinnedAddress.isNull();
+}
+
+bool NvComputer::isAddressLocked() const
+{
+    QReadLocker readLocker(&lock);
+    return addressLocked;
+}
+
+void NvComputer::setAddressLocked(bool locked)
+{
+    QWriteLocker writeLocker(&lock);
+    addressLocked = locked;
+}
+
+QVector<NvAddress> NvComputer::addressesToTry() const
+{
+    {
+        QReadLocker readLocker(&lock);
+
+        // 强制指定：候选只剩这一个。故意不做任何回退 —— 用户勾这个就是为了
+        // 「必须走这条链路」，自动切换到别的网段才是 bug。
+        if (addressLocked && !pinnedAddress.isNull()) {
+            QVector<NvAddress> lockedList;
+            lockedList.append(pinnedAddress);
+            return lockedList;
+        }
+    }
+
+    return uniqueAddresses();
+}
+
+void NvComputer::markAddressLatency(const NvAddress& address, int milliseconds)
+{
+    if (address.isNull() || milliseconds < 0) {
+        return;
+    }
+
+    QWriteLocker lock(&this->lock);
+
+    // 指数滑动平均（历史权重 3:1），避免单次抖动把某个地址的排序掀翻。
+    // 局域网串流的首选地址应该稳定，而不是每轮都在首选位上跳。
+    auto it = m_AddressLatencies.find(address.toString());
+    if (it == m_AddressLatencies.end() || it.value() < 0) {
+        m_AddressLatencies.insert(address.toString(), milliseconds);
+    }
+    else {
+        it.value() = (it.value() * 3 + milliseconds) / 4;
+    }
+}
+
+int NvComputer::getAddressLatency(const NvAddress& address) const
+{
+    if (address.isNull()) {
+        return -1;
+    }
+
+    QReadLocker lock(&this->lock);
+    return m_AddressLatencies.value(address.toString(), -1);
+}
+
+bool NvComputer::isAddressTestedLocked(const NvAddress& address) const
+{
+    for (const NvAddress& testedAddress : std::as_const(m_TestedAddresses)) {
+        if (testedAddress == address) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+qint64 NvComputer::addressSortKeyLocked(const NvAddress& address) const
+{
+    // 排序权重：数值越小越优先。高 32 位是档次，低 32 位是同档次内的代价
+    // （实测延迟毫秒数，越低越好）。
+
+    // 档次 0：用户手动指定的地址，永远第一，不参与测速比较。
+    if (!pinnedAddress.isNull() && address == pinnedAddress) {
+        return 0;
+    }
+
+    // 档次 2：还没验证过能用的地址，排最后 —— 它们要等验证过的地址全失败
+    // 才会被轮到，正好是「自动回退」那一层。
+    if (!isAddressTestedLocked(address)) {
+        return static_cast<qint64>(2) << 32;
+    }
+
+    // 档次 1：验证过能用的地址，按实测延迟从低到高排，最快的排最前 ——
+    // 这就是「自动测速选最好的那条」。没测到延迟的按 INT_MAX 排在同档次末尾。
+    qint64 score = m_AddressLatencies.value(address.toString(), INT_MAX);
+    if (score < 0) {
+        score = INT_MAX;
+    }
+
+    // 正在生效的地址留一点粘滞余量：只有别的链路快出 HOST_SWITCH_HYSTERESIS_MS
+    // 以上才会换首选，免得两条延迟接近的地址每轮都在首选位上互相抢，
+    // 白白把串流地址抖来抖去。
+    if (!activeAddress.isNull() && address == activeAddress) {
+        score -= HOST_SWITCH_HYSTERESIS_MS;
+        if (score < 0) {
+            score = 0;
+        }
+    }
+
+    return (static_cast<qint64>(1) << 32) | static_cast<quint32>(score);
+}
+
 void NvComputer::markAddressTestSucceeded(const NvAddress& address)
 {
     if (address.isNull()) {
@@ -578,10 +708,8 @@ void NvComputer::markAddressTestSucceeded(const NvAddress& address)
     }
 
     QWriteLocker lock(&this->lock);
-    for (const NvAddress& testedAddress : std::as_const(m_TestedAddresses)) {
-        if (testedAddress == address) {
-            return;
-        }
+    if (isAddressTestedLocked(address)) {
+        return;
     }
 
     m_TestedAddresses.append(address);
@@ -594,13 +722,7 @@ bool NvComputer::hasAddressTestSucceeded(const NvAddress& address) const
     }
 
     QReadLocker lock(&this->lock);
-    for (const NvAddress& testedAddress : std::as_const(m_TestedAddresses)) {
-        if (testedAddress == address) {
-            return true;
-        }
-    }
-
-    return false;
+    return isAddressTestedLocked(address);
 }
 
 bool NvComputer::update(const NvComputer& that)
@@ -611,8 +733,11 @@ bool NvComputer::update(const NvComputer& that)
     QWriteLocker thisLock(&this->lock);
     QReadLocker thatLock(&that.lock);
 
-    // UUID may not change or we're talking to a new PC
-    Q_ASSERT(this->uuid == that.uuid);
+    // UUID may not change or we're talking to a new PC.
+    // 本地 UUID 为空是历史脏数据（或手工添加的条目）。这种记录以前会在
+    // 「Found unexpected PC」那一步被永久判离线；现在放宽断言，让响应方的
+    // 身份先被采纳，回写与换键交给 ComputerManager 收尾。
+    Q_ASSERT(this->uuid.isEmpty() || this->uuid == that.uuid);
 
 #define ASSIGN_IF_CHANGED(field)       \
     if (this->field != that.field) {   \

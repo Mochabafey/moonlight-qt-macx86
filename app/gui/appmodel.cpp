@@ -297,6 +297,9 @@ QVariantList AppModel::buildConnectionAddressList(NvComputer* computer)
     // 分不出「自动选中的」和「用户固定的」。
     autoItem["isActive"] = pinnedAddress.isNull();
     autoItem["isAuto"] = true;
+    // 「自动」不是一个具体地址，没有延迟可言，也不参与强制指定。
+    autoItem["latency"] = -1;
+    autoItem["isLocked"] = false;
     addresses.append(autoItem);
 
     for (const NvAddress& address : allAddresses) {
@@ -310,9 +313,16 @@ QVariantList AppModel::buildConnectionAddressList(NvComputer* computer)
         item["isActive"] = !pinnedAddress.isNull() && address == pinnedAddress;
         item["isAuto"] = false;
         item["isTested"] = computer->hasAddressTestSucceeded(address);
+        // 最近一次成功探测的往返毫秒数，-1 表示还没测到。列表按这个值从快到慢排，
+        // 用户一眼能看出哪条链路是好的。
+        item["latency"] = computer->getAddressLatency(address);
+        item["isLocked"] = !pinnedAddress.isNull() && address == pinnedAddress
+                           && computer->isAddressLocked();
         addresses.append(item);
     }
 
+    // allAddresses 已经在 NvComputer::uniqueAddresses() 里按质量排过序了
+    // （用户指定 > 验证过且延迟低的 > 没验证过的），这里不再重排。
     return addresses;
 }
 
@@ -361,6 +371,32 @@ bool AppModel::resetToAutomaticAddress()
     }
 
     return m_Computer->resetToAutomaticAddress();
+}
+
+bool AppModel::setAddressLocked(bool locked)
+{
+    if (!m_Computer) {
+        return false;
+    }
+
+    // 没有固定地址就没有「强制指定」的落点。勾了只会让轮询空转，
+    // 所以直接拒绝，让界面把勾去掉。
+    if (locked && !m_Computer->hasPinnedAddress()) {
+        qWarning() << "Refusing to lock the connection without a pinned address";
+        return false;
+    }
+
+    m_Computer->setAddressLocked(locked);
+    return true;
+}
+
+bool AppModel::isAddressLocked() const
+{
+    if (!m_Computer) {
+        return false;
+    }
+
+    return m_Computer->isAddressLocked();
 }
 
 QVariantMap AppModel::getActiveAddressInfo()

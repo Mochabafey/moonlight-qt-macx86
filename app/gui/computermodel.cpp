@@ -18,6 +18,8 @@ void ComputerModel::initialize(ComputerManager* computerManager)
             this, &ComputerModel::handleComputerStateChanged);
     connect(m_ComputerManager, &ComputerManager::pairingCompleted,
             this, &ComputerModel::handlePairingCompleted);
+    connect(m_ComputerManager, &ComputerManager::hostProbeCompleted,
+            this, &ComputerModel::handleHostProbeCompleted);
 
     m_Computers = m_ComputerManager->getComputers();
 }
@@ -203,6 +205,37 @@ bool ComputerModel::setActiveAddressForComputer(int computerIndex, QString addre
     return true;
 }
 
+bool ComputerModel::setAddressLockedForComputer(int computerIndex, bool locked)
+{
+    if (computerIndex < 0 || computerIndex >= m_Computers.count()) {
+        qWarning() << "Invalid computer index for setAddressLockedForComputer:" << computerIndex;
+        return false;
+    }
+
+    NvComputer* computer = m_Computers[computerIndex];
+
+    // 没有固定地址就谈不上「强制指定」—— 勾了也只会把自动模式锁死在一个
+    // 空地址上，所以这里直接拒绝，让界面把勾去掉。
+    if (locked && !computer->hasPinnedAddress()) {
+        qWarning() << "Refusing to lock the connection without a pinned address";
+        return false;
+    }
+
+    computer->setAddressLocked(locked);
+
+    emit dataChanged(createIndex(computerIndex, 0), createIndex(computerIndex, 0));
+    return true;
+}
+
+bool ComputerModel::isAddressLockedForComputer(int computerIndex) const
+{
+    if (computerIndex < 0 || computerIndex >= m_Computers.count()) {
+        return false;
+    }
+
+    return m_Computers[computerIndex]->isAddressLocked();
+}
+
 bool ComputerModel::resetToAutomaticAddressForComputer(int computerIndex)
 {
     if (computerIndex < 0 || computerIndex >= m_Computers.count()) {
@@ -302,6 +335,67 @@ void ComputerModel::pairComputer(int computerIndex, QString pin)
     Q_ASSERT(computerIndex < m_Computers.count());
 
     m_ComputerManager->pairHost(m_Computers[computerIndex], pin);
+}
+
+void ComputerModel::forceConnectComputer(int computerIndex)
+{
+    if (computerIndex < 0 || computerIndex >= m_Computers.count()) {
+        qWarning() << "Invalid computer index for forceConnectComputer:" << computerIndex;
+        emit hostProbeCompleted(false, QString());
+        return;
+    }
+
+    m_ComputerManager->probeHostNow(m_Computers[computerIndex]);
+}
+
+void ComputerModel::forcePairComputer(int computerIndex)
+{
+    if (computerIndex < 0 || computerIndex >= m_Computers.count()) {
+        qWarning() << "Invalid computer index for forcePairComputer:" << computerIndex;
+        emit hostProbeCompleted(false, QString());
+        return;
+    }
+
+    // 配对的前提是链路通。先把这次强制探测抛出去，等它回来再决定要不要发配对
+    // 请求 —— 直接盲发配对只会拿到一个超时错误，反而看不出是网络问题还是
+    // PairStatus 的问题。
+    m_ForcePairPending = m_Computers[computerIndex];
+    m_ComputerManager->probeHostNow(m_ForcePairPending);
+}
+
+void ComputerModel::handleHostProbeCompleted(NvComputer* computer, bool success)
+{
+    // 主机可能在探测期间被删掉了，这时候别再碰它。
+    if (computer == nullptr || !m_Computers.contains(computer)) {
+        if (computer == m_ForcePairPending) {
+            m_ForcePairPending = nullptr;
+        }
+        emit hostProbeCompleted(false, QString());
+        return;
+    }
+
+    const QString computerName = computer->name;
+
+    if (computer == m_ForcePairPending) {
+        m_ForcePairPending = nullptr;
+
+        NvComputer::PairState pairState;
+        {
+            QReadLocker lock(&computer->lock);
+            pairState = computer->pairState;
+        }
+
+        if (success && pairState != NvComputer::PS_PAIRED) {
+            // 链路通了但还没配对：直接把配对码和请求一起发出去，界面负责把
+            // PIN 显示出来。这就是「离线状态下也能强制配对」的落点。
+            const QString pin = generatePinString();
+            m_ComputerManager->pairHost(computer, pin);
+            emit forcePairStarted(pin, computerName);
+            return;
+        }
+    }
+
+    emit hostProbeCompleted(success, computerName);
 }
 
 void ComputerModel::handlePairingCompleted(NvComputer*, QString error)

@@ -214,6 +214,7 @@ class ComputerManager : public QObject
     friend class DeferredHostDeletionTask;
     friend class PendingAddTask;
     friend class PendingPairingTask;
+    friend class DeferredHostProbeTask;
     friend class DelayedFlushThread;
 
 public:
@@ -232,6 +233,11 @@ public:
     QString generatePinString();
 
     void pairHost(NvComputer* computer, QString pin);
+
+    // 不管目标主机当前是不是 offline，立刻对它的候选地址做一次带短超时的探测。
+    // 用途：链路状态判错了（显示离线但其实在线）、或者用户就想跳过轮询直接
+    // 连一次 / 直接配对。成功会把主机置为在线并广播状态变化。
+    void probeHostNow(NvComputer* computer);
 
     void quitRunningApp(NvComputer* computer);
 
@@ -253,10 +259,20 @@ signals:
 
     void quitAppCompleted(QVariant error);
 
+    // 强制探测的结果。success=false 表示所有候选地址都没能拿到 serverinfo。
+    void hostProbeCompleted(NvComputer* computer, bool success);
+
 private slots:
     void handleAboutToQuit();
 
     void handleComputerStateChanged(NvComputer* computer);
+
+    // 收到空 UUID 主机响应回来的真实身份时，补写 UUID 并把这张记录换到新
+    // 键上（m_KnownHosts / m_PollEntries 都是按 uuid 索引的）。
+    void handleUuidDiscovered(NvComputer* computer, QString uuid);
+
+    // 强制探测收尾：成功时按正常的「主机状态变了」路径广播并落盘。
+    void handleHostProbeCompleted(NvComputer* computer, bool success);
 
     void handleMdnsServiceResolved(MdnsPendingComputer* computer, QVector<QHostAddress>& addresses);
 

@@ -10,6 +10,8 @@
 #include <QThread>
 #include <QThreadPool>
 #include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QNetworkAccessManager>
 #include <QRandomGenerator>
 
 #define SER_HOSTS "hosts"
@@ -35,7 +37,9 @@ private:
         NvHTTP http(address, 0, m_Computer->serverCert, !m_Computer->isNvidiaServerSoftware, nam, m_Computer->uuid);
 
         QString serverInfo;
+        QElapsedTimer timer;
         try {
+            timer.start();
             serverInfo = http.getServerInfo(NvHTTP::NvLogLevel::NVLL_NONE, true);
         } catch (...) {
             return false;
@@ -44,12 +48,24 @@ private:
         NvComputer newState(http, serverInfo);
 
         // Ensure the machine that responded is the one we intended to contact
-        if (m_Computer->uuid != newState.uuid) {
+        if (m_Computer->uuid.isEmpty()) {
+            // 这条记录没有 UUID（历史脏数据 / 手工添加的条目）。旧逻辑在下面
+            // 那一步会把它当成「找到了别的电脑」直接判离线，而且永远翻不了身。
+            // 改成先采纳响应方的身份，回写和换键交给 ComputerManager 处理。
+            qInfo() << "Polling" << m_Computer->name << "which has no local UUID; adopting"
+                    << newState.uuid << "from the responder";
+            emit uuidDiscovered(m_Computer, newState.uuid);
+        }
+        else if (m_Computer->uuid != newState.uuid) {
             qInfo() << "Found unexpected PC" << newState.name << "looking for" << m_Computer->name;
             return false;
         }
 
+        // 记下这个地址的真实往返耗时。下一轮 addressesToTry() 就按它排序，
+        // 好用的地址自动排到前面，坏掉的沉底。
+        m_Computer->markAddressLatency(address, static_cast<int>(timer.elapsed()));
         m_Computer->markAddressTestSucceeded(address);
+
         changed = m_Computer->update(newState);
         return true;
     }
@@ -98,7 +114,10 @@ private:
             bool online = false;
             bool wasOnline = m_Computer->state == NvComputer::CS_ONLINE;
             for (int i = 0; i < (wasOnline ? TRIES_BEFORE_OFFLINING : 1) && !online; i++) {
-                for (auto& address : m_Computer->uniqueAddresses()) {
+                // 候选地址按质量排序（用户指定 > 验证过且延迟最低的 > 还没验证
+                // 过的），第一个不行就自动试下一个。勾了「强制指定」时这里只会
+                // 有一个地址，失败也不会切到别的链路上去。
+                for (auto& address : m_Computer->addressesToTry()) {
                     if (isInterruptionRequested()) {
                         return;
                     }
@@ -155,6 +174,9 @@ private:
 
 signals:
    void computerStateChanged(NvComputer* computer);
+
+   // 轮询发现这条记录在本地没有 UUID，而响应方报了一个真实 UUID。
+   void uuidDiscovered(NvComputer* computer, QString uuid);
 
 private:
     NvComputer* m_Computer;
@@ -414,9 +436,61 @@ void ComputerManager::startPollingComputer(NvComputer* computer)
         PcMonitorThread* thread = new PcMonitorThread(computer);
         connect(thread, &PcMonitorThread::computerStateChanged,
                 this, &ComputerManager::handleComputerStateChanged);
+        connect(thread, &PcMonitorThread::uuidDiscovered,
+                this, &ComputerManager::handleUuidDiscovered);
         pollingEntry->setActiveThread(thread);
         thread->start();
     }
+}
+
+void ComputerManager::handleUuidDiscovered(NvComputer* computer, QString uuid)
+{
+    if (uuid.isEmpty()) {
+        return;
+    }
+
+    // 空 UUID 的记录在 m_KnownHosts / m_PollEntries 里挂在空字符串这个键上。
+    // 两个表都得搬到真实 UUID 上，否则下次 startPollingComputer() / deleteHost()
+    // 按 uuid 查表会找不到这条记录，出现「轮询线程还在跑但表里没它」的孤儿。
+    {
+        QWriteLocker lock(&m_Lock);
+
+        if (!computer->uuid.isEmpty()) {
+            // 已经在别处补过了，别再动一次
+            return;
+        }
+
+        if (m_KnownHosts.value(QString()) != computer) {
+            // 这条记录本来就不在已知主机表里（可能是临时探测出来的），只补字段
+            QWriteLocker computerLock(&computer->lock);
+            computer->uuid = uuid;
+            return;
+        }
+
+        if (m_KnownHosts.contains(uuid)) {
+            qWarning() << "Not adopting UUID" << uuid << "for" << computer->name
+                       << "because another known host already uses it";
+            return;
+        }
+
+        m_KnownHosts.remove(QString());
+        {
+            QWriteLocker computerLock(&computer->lock);
+            computer->uuid = uuid;
+        }
+        m_KnownHosts[uuid] = computer;
+
+        ComputerPollingEntry* entry = m_PollEntries.take(QString());
+        if (entry != nullptr) {
+            m_PollEntries[uuid] = entry;
+        }
+    }
+
+    qInfo() << "Adopted UUID" << uuid << "for host" << computer->name;
+
+    // 落盘，免得下次启动又读回那条空 UUID 的脏记录。saveHosts() 自己要拿
+    // m_Lock，所以必须等上面那把写锁放开之后再调。
+    saveHosts();
 }
 
 void ComputerManager::handleMdnsServiceResolved(MdnsPendingComputer* computer,
@@ -644,6 +718,99 @@ void ComputerManager::pairHost(NvComputer* computer, QString pin)
     // UI while waiting for pairing to complete
     PendingPairingTask* pairing = new PendingPairingTask(this, computer, pin);
     QThreadPool::globalInstance()->start(pairing);
+}
+
+// 「链路显示离线但实际在线」的兜底：不等下一轮轮询，也不管当前状态是不是
+// offline，直接照 addressesToTry() 的顺序把候选地址挨个戳一遍。第一台响应的
+// 主机就把 state 拉回在线，紧接着的配对 / 串流就能走正常流程。
+class DeferredHostProbeTask : public QObject, public QRunnable
+{
+    Q_OBJECT
+
+public:
+    DeferredHostProbeTask(ComputerManager* computerManager, NvComputer* computer)
+        : m_Computer(computer)
+    {
+        connect(this, &DeferredHostProbeTask::probeCompleted,
+                computerManager, &ComputerManager::handleHostProbeCompleted);
+        connect(this, &DeferredHostProbeTask::uuidDiscovered,
+                computerManager, &ComputerManager::handleUuidDiscovered);
+    }
+
+    void run() override
+    {
+        QNetworkAccessManager nam;
+        bool success = false;
+
+        for (const NvAddress& address : m_Computer->addressesToTry()) {
+            NvHTTP http(address, 0, m_Computer->serverCert,
+                        !m_Computer->isNvidiaServerSoftware, &nam, m_Computer->uuid);
+
+            QString serverInfo;
+            QElapsedTimer timer;
+            try {
+                timer.start();
+                serverInfo = http.getServerInfo(NvHTTP::NvLogLevel::NVLL_NONE, true);
+            } catch (...) {
+                continue;
+            }
+
+            NvComputer newState(http, serverInfo);
+
+            if (m_Computer->uuid.isEmpty()) {
+                emit uuidDiscovered(m_Computer, newState.uuid);
+            }
+            else if (m_Computer->uuid != newState.uuid) {
+                qInfo() << "Probe found unexpected PC" << newState.name << "looking for" << m_Computer->name;
+                continue;
+            }
+
+            // 顺手把这次的延迟记进账本，和轮询共用同一套排序依据。
+            m_Computer->markAddressLatency(address, static_cast<int>(timer.elapsed()));
+            m_Computer->markAddressTestSucceeded(address);
+
+            m_Computer->update(newState);
+            {
+                QWriteLocker lock(&m_Computer->lock);
+                m_Computer->state = NvComputer::CS_ONLINE;
+            }
+
+            qInfo() << m_Computer->name << "responded to a forced probe at" << address.toString();
+            success = true;
+            break;
+        }
+
+        emit probeCompleted(m_Computer, success);
+    }
+
+signals:
+    void probeCompleted(NvComputer* computer, bool success);
+
+    void uuidDiscovered(NvComputer* computer, QString uuid);
+
+private:
+    NvComputer* m_Computer;
+};
+
+void ComputerManager::probeHostNow(NvComputer* computer)
+{
+    if (computer == nullptr) {
+        return;
+    }
+
+    DeferredHostProbeTask* probe = new DeferredHostProbeTask(this, computer);
+    QThreadPool::globalInstance()->start(probe);
+}
+
+void ComputerManager::handleHostProbeCompleted(NvComputer* computer, bool success)
+{
+    if (success) {
+        // 走一遍正常的变更广播，让模型 / 界面把所有派生状态（在线、可配对、
+        // 应用列表等）一起刷新，并落盘。
+        handleComputerStateChanged(computer);
+    }
+
+    emit hostProbeCompleted(computer, success);
 }
 
 class PendingQuitTask : public QObject, public QRunnable

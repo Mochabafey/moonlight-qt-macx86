@@ -838,11 +838,15 @@ CenteredGridView {
 
         promptText: qsTr("Select the IP address to connect to this PC:")
 
-        onAddressSelected: function(address) {
+        onAddressSelected: function(address, forceLock) {
             if (address.isAuto) {
                 appModel.resetToAutomaticAddress()
             } else {
                 appModel.setActiveAddress(address.address, address.port)
+                // 地址定下来之后再落「强制指定」：没有固定地址时锁定会被拒绝。
+                if (forceLock) {
+                    appModel.setAddressLocked(true)
+                }
             }
             activeAddressInfo = appModel.getActiveAddressInfo()
         }
